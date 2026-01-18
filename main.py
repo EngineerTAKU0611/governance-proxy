@@ -15,7 +15,7 @@ if not GEMINI_API_KEY:
 
 # Geminiの設定
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-pro')
 
 # 予算設定（仮想通貨：YEN）
 BUDGET_LIMIT_YEN = 100.0  # 100円まで
