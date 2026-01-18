@@ -5,7 +5,7 @@ import time
 # --- ここが「インジェクション」ポイント ---
 # 本来は "https://api.openai.com/v1" ですが、
 # これをあなたのプロキシに向けさせます。
-BASE_URL = "http://localhost:8001/v1" 
+BASE_URL = "https://governance-proxy.onrender.com/v1" 
 # ---------------------------------------
 
 def chat_with_ai(prompt):

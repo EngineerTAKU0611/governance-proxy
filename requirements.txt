@@ -4,3 +4,4 @@ httpx
 pydantic
 streamlit
 pandas
+google-generativeai

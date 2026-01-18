@@ -1,80 +1,90 @@
-import uvicorn
-import httpx
-import hashlib
+import os
 import time
-# ↓ jsonライブラリを追加インポート
-import json 
-from fastapi import FastAPI, Request, HTTPException, Header
-from schemas import ImmutableLog, ExecutionIntent, RiskAssessment
+import json
+import logging
+import google.generativeai as genai
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 
-app = FastAPI(title="Governance-Proxy v0.1")
+# --- 設定 ---
+# Renderの環境変数からキーを取得
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    # ローカルテスト用（もし環境変数がなければ警告）
+    print("Warning: GEMINI_API_KEY not found.")
 
-# 予算オーバー設定のまま維持
-MOCK_BUDGET = {
-    "prof_sato": {"limit": 10.0, "current_usage": 9.9} 
-}
+# Geminiの設定
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-TARGET_API_URL = "https://api.openai.com/v1/chat/completions"
+# 予算設定（仮想通貨：YEN）
+BUDGET_LIMIT_YEN = 100.0  # 100円まで
+CURRENT_USAGE_YEN = 0.0   # 現在の使用額
+COST_PER_CHAR = 0.1       # 1文字0.1円（仮想コスト）
 
-@app.post("/v1/chat/completions")
-async def proxy_openai_request(
-    request: Request,
-    x_requester_id: str = Header(..., alias="X-Requester-ID"),
-    x_budget_owner_id: str = Header(..., alias="X-Budget-Owner-ID"),
-    x_intent_purpose: str = Header("debug", alias="X-Intent-Purpose"),
-    authorization: str = Header(...)
-):
-    body = await request.json()
-    estimated_cost = len(str(body)) * 0.00005 
+# ログファイル
+AUDIT_LOG_FILE = "audit.jsonl"
+
+# アプリの準備
+app = FastAPI()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class ChatRequest(BaseModel):
+    message: str
+    user_id: str = "guest"
+
+def log_audit(event_type: str, user: str, cost: float, detail: str):
+    """監査ログを記録する"""
+    log_entry = {
+        "timestamp": time.time(),
+        "event": event_type,
+        "user": user,
+        "cost_yen": cost,
+        "detail": detail
+    }
+    with open(AUDIT_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+
+@app.post("/v1/chat")
+async def chat_proxy(request: ChatRequest):
+    global CURRENT_USAGE_YEN
     
-    budget = MOCK_BUDGET.get(x_budget_owner_id, {"limit": 10.0, "current_usage": 0.0})
-    current_total = budget["current_usage"] + estimated_cost
-    usage_percent = (current_total / budget["limit"]) * 100
+    user_msg = request.message
     
-    risk_level = "low"
-    if usage_percent > 100:
-        risk_level = "critical"
-    elif usage_percent > 80:
-        risk_level = "high"
-
-    log_entry = ImmutableLog(
-        execution_id=f"exec_{int(time.time()*1000)}",
-        requester_id=x_requester_id,
-        budget_owner_id=x_budget_owner_id,
-        target_url=TARGET_API_URL,
-        intent=ExecutionIntent(purpose=x_intent_purpose, description="Proxy Request"),
-        risk_assessment=RiskAssessment(
-            estimated_cost_usd=estimated_cost,
-            risk_level=risk_level,
-            budget_impact_percent=usage_percent
-        ),
-        request_body_hash=hashlib.sha256(str(body).encode()).hexdigest()
-    )
-    log_entry.log_hash = log_entry.compute_canonical_hash()
+    # 1. 予算チェック（Governance）
+    # 入力文字数から仮想コストを試算
+    estimated_cost = len(user_msg) * COST_PER_CHAR
     
-    # --- 【ここが追加機能】ログをファイルに永久保存 ---
-    # audit.jsonl というファイルに追記モード('a')で書き込む
-    with open("audit.jsonl", "a", encoding="utf-8") as f:
-        # JSON形式で1行書き込む
-        f.write(log_entry.model_dump_json() + "\n")
-    # -----------------------------------------------
-    
-    print(f"\n[AUDIT] ID: {log_entry.execution_id}")
-    print(f"[AUDIT] Risk: {risk_level} (Budget: {usage_percent:.1f}%)")
-    print(f"[AUDIT] >> Saved to audit.jsonl")  # 保存したことを表示
-
-    if risk_level == "critical":
-        print(">>> BLOCKED: Budget Exceeded <<<")
+    if CURRENT_USAGE_YEN + estimated_cost > BUDGET_LIMIT_YEN:
+        # 遮断発動！
+        log_audit("BLOCK", request.user_id, 0, "Budget exceeded")
         raise HTTPException(
-            status_code=402,
-            detail={
-                "error": "Budget limit exceeded. Approval required.",
-                "audit_id": log_entry.execution_id
-            }
+            status_code=402, 
+            detail=f"Budget exceeded! (Limit: {BUDGET_LIMIT_YEN} YEN)"
         )
 
-    return {"message": "Proxy passed!", "audit_id": log_entry.execution_id}
+    # 2. Gemini APIを実行（Real Execution）
+    try:
+        response = model.generate_content(user_msg)
+        bot_reply = response.text
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# ポートは8001のまま
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # 3. コスト確定とログ記録（Audit）
+    # 入力+出力の文字数で課金
+    total_chars = len(user_msg) + len(bot_reply)
+    actual_cost = total_chars * COST_PER_CHAR
+    CURRENT_USAGE_YEN += actual_cost
+    
+    log_audit("SUCCESS", request.user_id, actual_cost, f"Used {total_chars} chars")
+    
+    return {
+        "reply": bot_reply,
+        "cost_yen": actual_cost,
+        "remaining_budget": BUDGET_LIMIT_YEN - CURRENT_USAGE_YEN
+    }
+
+@app.get("/")
+def read_root():
+    return {"status": "Governance Proxy is Active (Gemini Edition)"}
