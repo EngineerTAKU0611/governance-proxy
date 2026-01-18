@@ -3,4 +3,4 @@ uvicorn
 httpx
 pydantic
 streamlit
-google-generativeai
+google-generativeai>=0.7.0
