@@ -1,121 +1,88 @@
-import os
-import time
-import json
-import logging
-import google.generativeai as genai
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+import google.generativeai as genai
+import os
+import json
 
-# --- 設定 ---
-# Renderの環境変数からキーを取得
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    # ローカルテスト用（もし環境変数がなければ警告）
-    print("Warning: GEMINI_API_KEY not found.")
+# ============================
+# 1. 設定エリア
+# ============================
+# 自分のAPIキーを入れてください
+GENAI_API_KEY = os.environ.get("GEMINI_API_KEY")
+genai.configure(api_key=GENAI_API_KEY)
 
-# Geminiの設定
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+# モデルの設定（安定のProモデル）
+model = genai.GenerativeModel('gemini-pro')
 
-# 予算設定（仮想通貨：YEN）
-BUDGET_LIMIT_YEN = 100.0  # 100円まで
-CURRENT_USAGE_YEN = 0.0   # 現在の使用額
-COST_PER_CHAR = 0.1       # 1文字0.1円（仮想コスト）
+# 予算ファイルの場所
+BUDGET_FILE = "budget.json"
 
-# ログファイル
-AUDIT_LOG_FILE = "audit.jsonl"
-
-# アプリの準備
 app = FastAPI()
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
+# ============================
+# 2. 便利な道具（関数）
+# ============================
+def get_budget():
+    """予算ファイルから現在の残高を読み込む"""
+    try:
+        with open(BUDGET_FILE, "r") as f:
+            data = json.load(f)
+            return data.get("remaining_budget", 0.0)
+    except:
+        return 0.0 # ファイルがなければ0円
+
+def update_budget(new_amount):
+    """予算を新しい金額で上書き保存する"""
+    with open(BUDGET_FILE, "w") as f:
+        json.dump({"remaining_budget": new_amount}, f)
+
+# ============================
+# 3. AIと話す機能（アプリ用）
+# ============================
 class ChatRequest(BaseModel):
-    message: str
-    user_id: str = "guest"
-
-def log_audit(event_type: str, user: str, cost: float, detail: str):
-    """監査ログを記録する"""
-    log_entry = {
-        "timestamp": time.time(),
-        "event": event_type,
-        "user": user,
-        "cost_yen": cost,
-        "detail": detail
-    }
-    with open(AUDIT_LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    text: str
 
 @app.post("/v1/chat")
-async def chat_proxy(request: ChatRequest):
-    global CURRENT_USAGE_YEN
+async def chat(request: ChatRequest):
+    # ① まずノート（ファイル）を見て残高確認
+    current_budget = get_budget()
     
-    user_msg = request.message
-    
-    # 1. 予算チェック（Governance）
-    # 入力文字数から仮想コストを試算
-    estimated_cost = len(user_msg) * COST_PER_CHAR
-    
-    if CURRENT_USAGE_YEN + estimated_cost > BUDGET_LIMIT_YEN:
-        # 遮断発動！
-        log_audit("BLOCK", request.user_id, 0, "Budget exceeded")
-        raise HTTPException(
-            status_code=402, 
-            detail=f"Budget exceeded! (Limit: {BUDGET_LIMIT_YEN} YEN)"
-        )
+    # 予算チェック（1円未満ならアウト）
+    if current_budget < 1.0:
+        raise HTTPException(status_code=402, detail=f"Budget exceeded! (Current: {current_budget} YEN)")
 
-    # 2. Gemini APIを実行（Real Execution）
+    # ② Geminiに質問する
     try:
-        response = model.generate_content(user_msg)
-        bot_reply = response.text
+        response = model.generate_content(request.text)
+        reply_text = response.text
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # 3. コスト確定とログ記録（Audit）
-    # 入力+出力の文字数で課金
-    total_chars = len(user_msg) + len(bot_reply)
-    actual_cost = total_chars * COST_PER_CHAR
-    CURRENT_USAGE_YEN += actual_cost
-    
-    log_audit("SUCCESS", request.user_id, actual_cost, f"Used {total_chars} chars")
-    
+    # ③ コスト計算（文字数 × 0.1円）
+    input_char_count = len(request.text)
+    output_char_count = len(reply_text)
+    total_chars = input_char_count + output_char_count
+    cost = total_chars * 0.1
+
+    # ④ 予算を減らしてノートを更新
+    new_budget = current_budget - cost
+    update_budget(new_budget)
+
+    # ⑤ 返事をする
     return {
-        "reply": bot_reply,
-        "cost_yen": actual_cost,
-        "remaining_budget": BUDGET_LIMIT_YEN - CURRENT_USAGE_YEN
+        "reply": reply_text,
+        "cost": cost,
+        "remaining_budget": new_budget
     }
 
-@app.get("/")
-def read_root():
-    return {"status": "Governance Proxy is Active (Gemini Edition)"}
-# ==========================================
-#  ここから下：管理者用チャージ機能（完全版）
-# ==========================================
+# ============================
+# 4. 管理者チャージ機能
+# ============================
 class BudgetRequest(BaseModel):
     amount: float
 
 @app.post("/admin/reset_budget")
 def reset_budget(request: BudgetRequest):
-    import json   # 念のためここでインポート！
-    
-    # ファイル名を直接指定（これで迷子になりません）
-    file_path = "budget.json"
-    
-    # 1. データを準備する
-    data = {"remaining_budget": 0} # 初期値
-    
-    # もしファイルがあれば読み込む
-    try:
-        with open(file_path, "r") as f:
-            data = json.load(f)
-    except:
-        pass # ファイルがなければ気にせず進む
-
-    # 2. 金額を書き換える
-    data["remaining_budget"] = request.amount
-    
-    # 3. ファイルに保存する
-    with open(file_path, "w") as f:
-        json.dump(data, f)
-
+    # ノートを直接書き換える
+    update_budget(request.amount)
     return {"status": "success", "message": f"予算を {request.amount}円 にチャージしました！"}
