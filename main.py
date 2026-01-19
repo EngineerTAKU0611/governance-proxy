@@ -89,26 +89,33 @@ async def chat_proxy(request: ChatRequest):
 def read_root():
     return {"status": "Governance Proxy is Active (Gemini Edition)"}
 # ==========================================
-#  ここから下：管理者用チャージ機能（修正版）
+#  ここから下：管理者用チャージ機能（完全版）
 # ==========================================
 class BudgetRequest(BaseModel):
     amount: float
 
 @app.post("/admin/reset_budget")
 def reset_budget(request: BudgetRequest):
-    # 1. ファイルを読み込む（変数がないならファイルから取る！）
+    import json   # 念のためここでインポート！
+    
+    # ファイル名を直接指定（これで迷子になりません）
+    file_path = "budget.json"
+    
+    # 1. データを準備する
+    data = {"remaining_budget": 0} # 初期値
+    
+    # もしファイルがあれば読み込む
     try:
-        with open(BUDGET_FILE, "r") as f:
+        with open(file_path, "r") as f:
             data = json.load(f)
     except:
-        # もしファイルがなければ新しく作る
-        data = {"remaining_budget": 0}
+        pass # ファイルがなければ気にせず進む
 
     # 2. 金額を書き換える
     data["remaining_budget"] = request.amount
     
     # 3. ファイルに保存する
-    with open(BUDGET_FILE, "w") as f:
+    with open(file_path, "w") as f:
         json.dump(data, f)
 
     return {"status": "success", "message": f"予算を {request.amount}円 にチャージしました！"}
