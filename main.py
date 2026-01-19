@@ -12,7 +12,7 @@ GENAI_API_KEY = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=GENAI_API_KEY)
 
 # モデルの設定（安定のProモデル）
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # 予算ファイルの場所
 BUDGET_FILE = "budget.json"

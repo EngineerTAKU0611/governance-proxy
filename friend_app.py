@@ -17,7 +17,7 @@ def test_proxy():
     # データ（手紙の中身）
     # Gemini版はシンプルに "message" だけを送るルールにしました
     payload = {
-        "message": "Hello! 今日の東京の天気は？",
+        "text": "Hello! 今日の東京の天気は？",
         "user_id": "friend_01"
     }
 
