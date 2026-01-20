@@ -29,7 +29,7 @@ def test_proxy():
         if response.status_code == 200:
             data = response.json()
             print(f"✅ 成功！ Geminiの返事: {data['reply']}")
-            print(f"💰 かかったコスト: {data['cost_yen']}円")
+            print(f"💰 かかったコスト: {data['cost']}円")
             print(f"📉 残り予算: {data['remaining_budget']}円")
         
         elif response.status_code == 402:
